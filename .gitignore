@@ -1,0 +1,10 @@
+/egresso
+*.test
+*.out
+coverage.txt
+coverage.html
+
+.idea/
+.vscode/
+*.swp
+*~
