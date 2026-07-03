@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.svg" alt="egresso" width="96">
+  <img src="docs/icon.svg" alt="egresso" width="128">
 </p>
 
 # egresso
