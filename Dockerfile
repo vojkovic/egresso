@@ -17,7 +17,8 @@ RUN mkdir src \
     && cargo build --release --locked --target x86_64-unknown-linux-musl \
     && rm -rf src
 COPY src ./src
-RUN cargo build --release --locked --target x86_64-unknown-linux-musl
+RUN cargo clean -p egresso \
+    && cargo build --release --locked --target x86_64-unknown-linux-musl
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /src/target/x86_64-unknown-linux-musl/release/egresso /egresso
