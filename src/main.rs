@@ -1,4 +1,4 @@
-use egresso::Config;
+use egresso::{containers, docker_available, Loader};
 
 fn die(err: impl std::fmt::Display) -> ! {
     eprintln!("{err}");
@@ -6,38 +6,22 @@ fn die(err: impl std::fmt::Display) -> ! {
 }
 
 fn main() {
-    let cfg = Config::load().unwrap_or_else(|e| die(e));
-    egresso::bpf::validate(&cfg.prefixes)
-        .unwrap_or_else(|e| die(format!("prefix check failed: {e}")));
-    if !egresso::docker_available() {
+    if !docker_available() {
         die("need /var/run/docker.sock");
     }
+    eprintln!("watching label egresso.prefixes");
 
-    eprintln!("{} prefix(es) ok", cfg.prefixes.len());
-    if cfg.host_fallback {
-        eprintln!("host fallback enabled");
-    }
-    eprintln!("watching label egresso=true");
-
-    let mut loader = egresso::bpf::Loader::new(&cfg).unwrap_or_else(|e| die(e));
+    let mut loader = Loader::new();
     let mut mask = block_quit_signals();
     loop {
-        match egresso::containers() {
-            Ok(found) if found.is_empty() => {
-                if !loader.attached().is_empty() {
-                    let _ = loader.sync(&[]);
-                    eprintln!("no labeled containers running; detached");
-                }
-            }
+        match containers() {
             Ok(found) => {
-                let paths: Vec<_> = found.iter().map(|c| c.cgroup.clone()).collect();
-                match loader.sync(&paths) {
-                    Ok(true) => {
-                        let names: Vec<_> = found.iter().map(|c| c.name.as_str()).collect();
-                        eprintln!("attached to {}", names.join(", "));
+                if loader.sync(&found) {
+                    if loader.is_empty() {
+                        eprintln!("no labeled containers running; detached");
+                    } else {
+                        eprintln!("attached to {}", loader.names().join(", "));
                     }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("attach: {e}"),
                 }
             }
             Err(e) => eprintln!("{e}"),

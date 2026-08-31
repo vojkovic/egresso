@@ -6,9 +6,9 @@
 #define SOL_IPV6 41
 #define IP_FREEBIND 15
 #define IPV6_FREEBIND 78
+#define BPF_MAP_TYPE_ARRAY 2
 
 #define MAX_PREFIXES 16
-#define FLAG_HOST_FALLBACK 1u
 
 typedef unsigned char __u8;
 typedef unsigned short __u16;
@@ -27,21 +27,6 @@ static long (*bpf_setsockopt)(void *ctx, int level, int optname, void *optval, i
     (void *)49;
 static long (*bpf_bind)(void *ctx, void *addr, int addr_len) = (void *)64;
 
-struct bpf_sock {
-    __u32 bound_dev_if;
-    __u32 family;
-    __u32 type;
-    __u32 protocol;
-    __u32 mark;
-    __u32 priority;
-    __u32 src_ip4;
-    __u32 src_ip6[4];
-    __u32 src_port;
-    __be16 dst_port;
-    __u32 dst_ip4;
-    __u32 dst_ip6[4];
-};
-
 struct bpf_sock_addr {
     __u32 user_family;
     __u32 user_ip4;
@@ -52,7 +37,6 @@ struct bpf_sock_addr {
     __u32 protocol;
     __u32 msg_src_ip4;
     __u32 msg_src_ip6[4];
-    struct bpf_sock *sk;
 };
 
 struct sockaddr_in {
@@ -86,35 +70,35 @@ struct bpf_map_def {
 };
 
 struct bpf_map_def SEC("maps") prefixes_v4 = {
-    .type = 2,
+    .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(__u32),
     .value_size = sizeof(struct prefix),
     .max_entries = MAX_PREFIXES,
 };
 
 struct bpf_map_def SEC("maps") prefixes_v6 = {
-    .type = 2,
+    .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(__u32),
     .value_size = sizeof(struct prefix),
     .max_entries = MAX_PREFIXES,
 };
 
 struct bpf_map_def SEC("maps") n_v4 = {
-    .type = 2,
+    .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(__u32),
     .value_size = sizeof(__u32),
     .max_entries = 1,
 };
 
 struct bpf_map_def SEC("maps") n_v6 = {
-    .type = 2,
+    .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(__u32),
     .value_size = sizeof(__u32),
     .max_entries = 1,
 };
 
 struct bpf_map_def SEC("maps") flags = {
-    .type = 2,
+    .type = BPF_MAP_TYPE_ARRAY,
     .key_size = sizeof(__u32),
     .value_size = sizeof(__u32),
     .max_entries = 1,
@@ -125,7 +109,21 @@ static __always_inline int allow_fallback(void)
     __u32 key = 0;
     __u32 *f = bpf_map_lookup_elem(&flags, &key);
 
-    return f && (*f & FLAG_HOST_FALLBACK);
+    return f && *f;
+}
+
+static __always_inline void freebind4(void *ctx)
+{
+    int one = 1;
+
+    bpf_setsockopt(ctx, IPPROTO_IP, IP_FREEBIND, &one, sizeof(one));
+}
+
+static __always_inline void freebind6(void *ctx)
+{
+    int one = 1;
+
+    bpf_setsockopt(ctx, SOL_IPV6, IPV6_FREEBIND, &one, sizeof(one));
 }
 
 static __always_inline int is_lb4(__u32 ip)
@@ -170,40 +168,20 @@ static __always_inline int skip6(const __u32 ip6[4])
     return 0;
 }
 
-static __always_inline const struct prefix *rand_v4(void)
+static __always_inline const struct prefix *rand_from(void *nmap, void *pmap)
 {
     __u32 z = 0;
-    __u32 *n = bpf_map_lookup_elem(&n_v4, &z);
+    __u32 *n = bpf_map_lookup_elem(nmap, &z);
     __u32 max;
     __u32 i;
 
-    if (!n)
+    if (!n || !*n)
         return 0;
     max = *n;
-    if (max == 0)
-        return 0;
     if (max > MAX_PREFIXES)
         max = MAX_PREFIXES;
     i = bpf_get_prandom_u32() % max;
-    return bpf_map_lookup_elem(&prefixes_v4, &i);
-}
-
-static __always_inline const struct prefix *rand_v6(void)
-{
-    __u32 z = 0;
-    __u32 *n = bpf_map_lookup_elem(&n_v6, &z);
-    __u32 max;
-    __u32 i;
-
-    if (!n)
-        return 0;
-    max = *n;
-    if (max == 0)
-        return 0;
-    if (max > MAX_PREFIXES)
-        max = MAX_PREFIXES;
-    i = bpf_get_prandom_u32() % max;
-    return bpf_map_lookup_elem(&prefixes_v6, &i);
+    return bpf_map_lookup_elem(pmap, &i);
 }
 
 static __always_inline int fill_v4(const struct prefix *p, __be32 *out)
@@ -265,7 +243,7 @@ static __always_inline int fill_v6(const struct prefix *p, __u8 out[16])
 
 static __always_inline int pick_v4(__be32 *out)
 {
-    const struct prefix *p = rand_v4();
+    const struct prefix *p = rand_from(&n_v4, &prefixes_v4);
 
     if (!p)
         return -1;
@@ -274,60 +252,11 @@ static __always_inline int pick_v4(__be32 *out)
 
 static __always_inline int pick_v6(__u8 out[16])
 {
-    const struct prefix *p = rand_v6();
+    const struct prefix *p = rand_from(&n_v6, &prefixes_v6);
 
     if (!p)
         return -1;
     return fill_v6(p, out);
-}
-
-static __always_inline int bind_v4(void *ctx)
-{
-    struct sockaddr_in sa = {};
-    int one = 1;
-    int rc = pick_v4(&sa.sin_addr);
-
-    if (rc < 0)
-        return allow_fallback();
-    bpf_setsockopt(ctx, IPPROTO_IP, IP_FREEBIND, &one, sizeof(one));
-    sa.sin_family = AF_INET;
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
-}
-
-static __always_inline int bind_v6(void *ctx)
-{
-    struct sockaddr_in6 sa = {};
-    int one = 1;
-    int rc = pick_v6(sa.sin6_addr);
-
-    if (rc < 0)
-        return allow_fallback();
-    bpf_setsockopt(ctx, SOL_IPV6, IPV6_FREEBIND, &one, sizeof(one));
-    sa.sin6_family = AF_INET6;
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
-}
-
-static __always_inline int bind_v4mapped(void *ctx)
-{
-    struct sockaddr_in6 sa = {};
-    __be32 v4;
-    int one = 1;
-    int rc = pick_v4(&v4);
-
-    if (rc < 0)
-        return allow_fallback();
-    bpf_setsockopt(ctx, SOL_IPV6, IPV6_FREEBIND, &one, sizeof(one));
-    sa.sin6_family = AF_INET6;
-    sa.sin6_addr[10] = 0xff;
-    sa.sin6_addr[11] = 0xff;
-    sa.sin6_addr[12] = (__u8)v4;
-    sa.sin6_addr[13] = (__u8)(v4 >> 8);
-    sa.sin6_addr[14] = (__u8)(v4 >> 16);
-    sa.sin6_addr[15] = (__u8)(v4 >> 24);
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
 }
 
 static __always_inline void store_v6(__u32 dst[4], const __u8 src[16])
@@ -338,6 +267,57 @@ static __always_inline void store_v6(__u32 dst[4], const __u8 src[16])
         dst[i] = bpf_htonl(((__u32)src[i * 4] << 24) | ((__u32)src[i * 4 + 1] << 16) |
                            ((__u32)src[i * 4 + 2] << 8) | (__u32)src[i * 4 + 3]);
     }
+}
+
+static __always_inline void v4mapped_words(__u32 dst[4], __be32 v4)
+{
+    dst[0] = 0;
+    dst[1] = 0;
+    dst[2] = bpf_htonl(0x0000ffff);
+    dst[3] = v4;
+}
+
+static __always_inline int bind_v4(void *ctx)
+{
+    struct sockaddr_in sa = {};
+
+    if (pick_v4(&sa.sin_addr) < 0)
+        return allow_fallback();
+    freebind4(ctx);
+    sa.sin_family = AF_INET;
+    bpf_bind(ctx, &sa, sizeof(sa));
+    return 1;
+}
+
+static __always_inline int bind_v6(void *ctx)
+{
+    struct sockaddr_in6 sa = {};
+
+    if (pick_v6(sa.sin6_addr) < 0)
+        return allow_fallback();
+    freebind6(ctx);
+    sa.sin6_family = AF_INET6;
+    bpf_bind(ctx, &sa, sizeof(sa));
+    return 1;
+}
+
+static __always_inline int bind_v4mapped(void *ctx)
+{
+    struct sockaddr_in6 sa = {};
+    __be32 v4;
+
+    if (pick_v4(&v4) < 0)
+        return allow_fallback();
+    freebind6(ctx);
+    sa.sin6_family = AF_INET6;
+    sa.sin6_addr[10] = 0xff;
+    sa.sin6_addr[11] = 0xff;
+    sa.sin6_addr[12] = (__u8)v4;
+    sa.sin6_addr[13] = (__u8)(v4 >> 8);
+    sa.sin6_addr[14] = (__u8)(v4 >> 16);
+    sa.sin6_addr[15] = (__u8)(v4 >> 24);
+    bpf_bind(ctx, &sa, sizeof(sa));
+    return 1;
 }
 
 SEC("cgroup/connect4")
@@ -383,10 +363,7 @@ int sendmsg6(struct bpf_sock_addr *ctx)
 
         if (pick_v4(&v4) < 0)
             return allow_fallback();
-        ctx->msg_src_ip6[0] = 0;
-        ctx->msg_src_ip6[1] = 0;
-        ctx->msg_src_ip6[2] = bpf_htonl(0x0000ffff);
-        ctx->msg_src_ip6[3] = v4;
+        v4mapped_words(ctx->msg_src_ip6, v4);
         return 1;
     }
     if (pick_v6(addr) < 0)
@@ -399,13 +376,12 @@ SEC("cgroup/bind4")
 int bind4(struct bpf_sock_addr *ctx)
 {
     __be32 addr;
-    int one = 1;
 
     if (ctx->user_ip4)
         return 1;
     if (pick_v4(&addr) < 0)
         return allow_fallback();
-    bpf_setsockopt(ctx, IPPROTO_IP, IP_FREEBIND, &one, sizeof(one));
+    freebind4(ctx);
     ctx->user_ip4 = addr;
     return 1;
 }
@@ -414,13 +390,12 @@ SEC("cgroup/bind6")
 int bind6(struct bpf_sock_addr *ctx)
 {
     __u8 addr[16];
-    int one = 1;
 
     if (ctx->user_ip6[0] || ctx->user_ip6[1] || ctx->user_ip6[2] || ctx->user_ip6[3])
         return 1;
     if (pick_v6(addr) < 0)
         return allow_fallback();
-    bpf_setsockopt(ctx, SOL_IPV6, IPV6_FREEBIND, &one, sizeof(one));
+    freebind6(ctx);
     store_v6(ctx->user_ip6, addr);
     return 1;
 }

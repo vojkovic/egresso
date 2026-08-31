@@ -9,7 +9,6 @@ description = "Rotate outbound source IPs from a prefix pool via cgroup BPF"
 aya = { version = "0.14", default-features = false }
 ipnet = "2"
 libc = "0.2"
-socket2 = "0.6"
 
 [profile.release]
 lto = true

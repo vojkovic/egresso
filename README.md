@@ -2,7 +2,7 @@
 
 Rotates outbound IPv4 and IPv6 source addresses from a prefix pool, in the kernel. This is the successor to [http-proxy-ipv6-pool-docker](https://github.com/vojkovic/http-proxy-ipv6-pool-docker).
 
-Egresso attaches a BPF program to a container's cgroup and binds a random address from the pool on the way out. Label the container `egresso=true`.
+Egresso attaches a BPF program to a container's cgroup and binds a random address from that container's pool on the way out. The pool is the `egresso.prefixes` label.
 
 ## Setup
 
@@ -17,16 +17,14 @@ ip -4 route add local 192.0.2.0/24 dev eth0
 
 ## Config
 
-- `EGRESSO_PREFIXES`: list of CIDR prefixes for source addresses, e.g. `2001:db8::/48,192.0.2.0/24`
-
-- `EGRESSO_HOST_FALLBACK`: Fallback to the host networking if the pool cannot be used (default: `false`)
-
 On each container you want rotated:
 
 ```yaml
 labels:
-  egresso: "true"
+  egresso.prefixes: "2001:db8::/48,192.0.2.0/24"
 ```
+
+Optional: `egresso.host-fallback: "true"` falls back to the host address if the pool has no prefix for that family (default is deny).
 
 ## Docker
 
@@ -39,6 +37,5 @@ docker run -d --name egresso --restart unless-stopped \
   --privileged --cgroupns=host \
   -v /sys/fs/cgroup:/sys/fs/cgroup \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -e EGRESSO_PREFIXES="2001:db8::/48,192.0.2.0/24" \
   ghcr.io/vojkovic/egresso:latest
 ```
