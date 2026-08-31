@@ -351,7 +351,13 @@ mod tests {
 
     #[test]
     fn programs_pass_verifier() {
-        let mut bpf = match load_object(&["192.0.2.0/24".parse().unwrap()], false) {
+        let mut bpf = match load_object(
+            &[
+                "192.0.2.0/24".parse().unwrap(),
+                "2001:db8::/48".parse().unwrap(),
+            ],
+            false,
+        ) {
             Ok(bpf) => bpf,
             Err(e) if skip_without_bpf(&e) => return,
             Err(e) => panic!("{e}"),

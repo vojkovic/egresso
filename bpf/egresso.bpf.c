@@ -211,31 +211,57 @@ static __always_inline int fill_v4(const struct prefix *p, __be32 *out)
     return -1;
 }
 
+static __always_inline __u32 pack_be(__u8 a, __u8 b, __u8 c, __u8 d)
+{
+    return ((__u32)a << 24) | ((__u32)b << 16) | ((__u32)c << 8) | (__u32)d;
+}
+
+static __always_inline __u32 mix_word(__u32 net, __u32 bits, __u32 off)
+{
+    __u32 host_bits;
+    __u32 host_mask;
+
+    if (bits <= off)
+        return bpf_get_prandom_u32();
+    if (bits >= off + 32)
+        return net;
+    host_bits = off + 32 - bits;
+    if (host_bits > 31)
+        return net;
+    host_mask = (1u << host_bits) - 1;
+    return (net & ~host_mask) | (bpf_get_prandom_u32() & host_mask);
+}
+
 static __always_inline int fill_v6(const struct prefix *p, __u8 out[16])
 {
     __u32 bits = p->prefix_len;
-    __u32 start;
-    __u32 rem;
-    int i;
+    __u32 w0, w1, w2, w3;
 
     if (bits > 128)
         bits = 128;
-    start = bits / 8;
-    rem = bits % 8;
 
-    for (i = 0; i < 16; i++) {
-        __u8 b;
+    w0 = mix_word(pack_be(p->addr[0], p->addr[1], p->addr[2], p->addr[3]), bits, 0);
+    w1 = mix_word(pack_be(p->addr[4], p->addr[5], p->addr[6], p->addr[7]), bits, 32);
+    w2 = mix_word(pack_be(p->addr[8], p->addr[9], p->addr[10], p->addr[11]), bits, 64);
+    w3 = mix_word(pack_be(p->addr[12], p->addr[13], p->addr[14], p->addr[15]), bits, 96);
 
-        if ((__u32)i < start)
-            b = p->addr[i];
-        else
-            b = (__u8)bpf_get_prandom_u32();
-        if (rem && (__u32)i == start) {
-            __u8 mask = (__u8)(0xff << (8 - rem));
-            b = (p->addr[i] & mask) | (b & (__u8)~mask);
-        }
-        out[i] = b;
-    }
+    out[0] = (__u8)(w0 >> 24);
+    out[1] = (__u8)(w0 >> 16);
+    out[2] = (__u8)(w0 >> 8);
+    out[3] = (__u8)w0;
+    out[4] = (__u8)(w1 >> 24);
+    out[5] = (__u8)(w1 >> 16);
+    out[6] = (__u8)(w1 >> 8);
+    out[7] = (__u8)w1;
+    out[8] = (__u8)(w2 >> 24);
+    out[9] = (__u8)(w2 >> 16);
+    out[10] = (__u8)(w2 >> 8);
+    out[11] = (__u8)w2;
+    out[12] = (__u8)(w3 >> 24);
+    out[13] = (__u8)(w3 >> 16);
+    out[14] = (__u8)(w3 >> 8);
+    out[15] = (__u8)w3;
+
     if ((out[0] & 0xf0) == 0xf0)
         return -1;
     return 0;
@@ -261,12 +287,10 @@ static __always_inline int pick_v6(__u8 out[16])
 
 static __always_inline void store_v6(__u32 dst[4], const __u8 src[16])
 {
-    int i;
-
-    for (i = 0; i < 4; i++) {
-        dst[i] = bpf_htonl(((__u32)src[i * 4] << 24) | ((__u32)src[i * 4 + 1] << 16) |
-                           ((__u32)src[i * 4 + 2] << 8) | (__u32)src[i * 4 + 3]);
-    }
+    dst[0] = bpf_htonl(pack_be(src[0], src[1], src[2], src[3]));
+    dst[1] = bpf_htonl(pack_be(src[4], src[5], src[6], src[7]));
+    dst[2] = bpf_htonl(pack_be(src[8], src[9], src[10], src[11]));
+    dst[3] = bpf_htonl(pack_be(src[12], src[13], src[14], src[15]));
 }
 
 static __always_inline void v4mapped_words(__u32 dst[4], __be32 v4)
