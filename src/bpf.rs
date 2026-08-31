@@ -12,9 +12,7 @@ use ipnet::IpNet;
 
 use crate::docker::Container;
 
-const PROGRAMS: &[&str] = &[
-    "connect4", "connect6", "sendmsg4", "sendmsg6", "bind4", "bind6",
-];
+const PROGRAMS: &[&str] = &["connect4", "connect6", "bind4", "bind6"];
 const FLAG_HOST_FALLBACK: u32 = 1;
 
 struct Instance {

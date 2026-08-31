@@ -293,14 +293,6 @@ static __always_inline void store_v6(__u32 dst[4], const __u8 src[16])
     dst[3] = bpf_htonl(pack_be(src[12], src[13], src[14], src[15]));
 }
 
-static __always_inline void v4mapped_words(__u32 dst[4], __be32 v4)
-{
-    dst[0] = 0;
-    dst[1] = 0;
-    dst[2] = bpf_htonl(0x0000ffff);
-    dst[3] = v4;
-}
-
 static __always_inline int bind_v4(void *ctx)
 {
     struct sockaddr_in sa = {};
@@ -331,7 +323,7 @@ static __always_inline int bind_v4mapped(void *ctx)
     __be32 v4;
 
     if (pick_v4(&v4) < 0)
-        return allow_fallback();
+        return 1;
     freebind6(ctx);
     sa.sin6_family = AF_INET6;
     sa.sin6_addr[10] = 0xff;
@@ -360,40 +352,6 @@ int connect6(struct bpf_sock_addr *ctx)
     if (is_v4mapped(ctx->user_ip6))
         return bind_v4mapped(ctx);
     return bind_v6(ctx);
-}
-
-SEC("cgroup/sendmsg4")
-int sendmsg4(struct bpf_sock_addr *ctx)
-{
-    __be32 addr;
-
-    if (skip4(ctx->user_ip4))
-        return 1;
-    if (pick_v4(&addr) < 0)
-        return allow_fallback();
-    ctx->msg_src_ip4 = addr;
-    return 1;
-}
-
-SEC("cgroup/sendmsg6")
-int sendmsg6(struct bpf_sock_addr *ctx)
-{
-    __u8 addr[16];
-
-    if (skip6(ctx->user_ip6))
-        return 1;
-    if (is_v4mapped(ctx->user_ip6)) {
-        __be32 v4;
-
-        if (pick_v4(&v4) < 0)
-            return allow_fallback();
-        v4mapped_words(ctx->msg_src_ip6, v4);
-        return 1;
-    }
-    if (pick_v6(addr) < 0)
-        return allow_fallback();
-    store_v6(ctx->msg_src_ip6, addr);
-    return 1;
 }
 
 SEC("cgroup/bind4")
