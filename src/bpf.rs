@@ -248,6 +248,15 @@ mod tests {
             || e.contains("not supported")
             || e.contains("no such file")
             || e.contains("function not implemented")
+            || e.contains("failed to create map")
+            || e.contains("map error")
+    }
+
+    #[test]
+    fn skips_ci_without_bpf_maps() {
+        assert!(skip_without_bpf(
+            "load BPF: map error: failed to create map `flags`"
+        ));
     }
 
     #[test]

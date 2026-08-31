@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/icon.svg" alt="egresso" width="128">
-</p>
-
 # egresso
 
 Rotates outbound IPv4 and IPv6 source addresses from a prefix pool, in the kernel. This is the successor to [http-proxy-ipv6-pool-docker](https://github.com/vojkovic/http-proxy-ipv6-pool-docker).
@@ -37,8 +33,6 @@ labels:
 Docker images are available:
 - [GitHub CR](https://github.com/vojkovic/egresso/pkgs/container/egresso)
 - [Codeberg CR](https://codeberg.org/vojkovic/-/packages/container/egresso/latest)
-
-It needs the host cgroup hierarchy and a Docker socket so it can find labeled containers.
 
 ```sh
 docker run -d --name egresso --restart unless-stopped \
