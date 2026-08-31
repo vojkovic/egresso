@@ -20,6 +20,7 @@ typedef __u32 __be32;
 #define __always_inline inline __attribute__((always_inline))
 
 #define bpf_htonl(x) __builtin_bswap32(x)
+#define bpf_htons(x) __builtin_bswap16(x)
 
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)1;
 static __u32 (*bpf_get_prandom_u32)(void) = (void *)7;
@@ -168,6 +169,11 @@ static __always_inline int skip6(const __u32 ip6[4])
     return 0;
 }
 
+static __always_inline int is_dns(const struct bpf_sock_addr *ctx)
+{
+    return ctx->user_port == bpf_htons(53);
+}
+
 static __always_inline const struct prefix *rand_from(void *nmap, void *pmap)
 {
     __u32 z = 0;
@@ -293,6 +299,14 @@ static __always_inline void store_v6(__u32 dst[4], const __u8 src[16])
     dst[3] = bpf_htonl(pack_be(src[12], src[13], src[14], src[15]));
 }
 
+static __always_inline void v4mapped_words(__u32 dst[4], __be32 v4)
+{
+    dst[0] = 0;
+    dst[1] = 0;
+    dst[2] = bpf_htonl(0x0000ffff);
+    dst[3] = v4;
+}
+
 static __always_inline int bind_v4(void *ctx)
 {
     struct sockaddr_in sa = {};
@@ -354,31 +368,40 @@ int connect6(struct bpf_sock_addr *ctx)
     return bind_v6(ctx);
 }
 
-SEC("cgroup/bind4")
-int bind4(struct bpf_sock_addr *ctx)
+SEC("cgroup/sendmsg4")
+int sendmsg4(struct bpf_sock_addr *ctx)
 {
     __be32 addr;
 
-    if (ctx->user_ip4)
+    if (skip4(ctx->user_ip4) || is_dns(ctx))
         return 1;
     if (pick_v4(&addr) < 0)
-        return allow_fallback();
+        return 1;
     freebind4(ctx);
-    ctx->user_ip4 = addr;
+    ctx->msg_src_ip4 = addr;
     return 1;
 }
 
-SEC("cgroup/bind6")
-int bind6(struct bpf_sock_addr *ctx)
+SEC("cgroup/sendmsg6")
+int sendmsg6(struct bpf_sock_addr *ctx)
 {
     __u8 addr[16];
 
-    if (ctx->user_ip6[0] || ctx->user_ip6[1] || ctx->user_ip6[2] || ctx->user_ip6[3])
+    if (skip6(ctx->user_ip6) || is_dns(ctx))
         return 1;
+    if (is_v4mapped(ctx->user_ip6)) {
+        __be32 v4;
+
+        if (pick_v4(&v4) < 0)
+            return 1;
+        freebind6(ctx);
+        v4mapped_words(ctx->msg_src_ip6, v4);
+        return 1;
+    }
     if (pick_v6(addr) < 0)
-        return allow_fallback();
+        return 1;
     freebind6(ctx);
-    store_v6(ctx->user_ip6, addr);
+    store_v6(ctx->msg_src_ip6, addr);
     return 1;
 }
 
