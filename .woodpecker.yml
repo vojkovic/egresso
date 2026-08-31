@@ -21,6 +21,7 @@ steps:
       registry: codeberg.org
       repo: vojkovic/egresso
       tags: latest
+      no_cache: true
       build_args:
         - CARGO_BUILD_JOBS=4
       username: vojkovic

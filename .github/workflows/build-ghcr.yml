@@ -34,6 +34,7 @@ jobs:
           context: .
           file: Dockerfile
           push: true
+          no-cache: true
           tags: ghcr.io/vojkovic/egresso:latest
 
       - name: Logout from GHCR
