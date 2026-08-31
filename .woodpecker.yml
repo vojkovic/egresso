@@ -1,0 +1,27 @@
+when:
+  - event: push
+    branch: master
+
+steps:
+  test:
+    image: rust:1-bookworm
+    environment:
+      CARGO_BUILD_JOBS: 4
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends clang
+      - cargo test --locked
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets --locked -- -D warnings
+
+  publish:
+    image: docker.io/woodpeckerci/plugin-kaniko:2.3.2
+    settings:
+      dockerfile: Dockerfile
+      registry: codeberg.org
+      repo: vojkovic/egresso
+      tags: latest
+      build_args:
+        - CARGO_BUILD_JOBS=4
+      username: vojkovic
+      password:
+        from_secret: cb_token

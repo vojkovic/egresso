@@ -1,0 +1,12 @@
+.git
+.github
+target
+docs
+deploy
+README.md
+LICENSE
+Makefile
+rustfmt.toml
+.gitlab-ci.yml
+.woodpecker.yml
+*.md

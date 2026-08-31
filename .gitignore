@@ -1,0 +1,8 @@
+target
+/egresso
+*.out
+
+.idea/
+.vscode/
+*.swp
+*~

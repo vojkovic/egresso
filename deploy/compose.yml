@@ -1,0 +1,12 @@
+services:
+  egresso:
+    image: ghcr.io/vojkovic/egresso:latest
+    container_name: egresso
+    restart: unless-stopped
+    privileged: true
+    cgroup: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      EGRESSO_PREFIXES: ${EGRESSO_PREFIXES:?set EGRESSO_PREFIXES in .env}
