@@ -34,7 +34,7 @@ Docker images are available:
 
 ```sh
 docker run -d --name egresso --restart unless-stopped \
-  --privileged --cgroupns=host \
+  --privileged --cgroupns=host --pid=host \
   -v /sys/fs/cgroup:/sys/fs/cgroup \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/vojkovic/egresso:latest

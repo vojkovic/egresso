@@ -9,6 +9,8 @@
 #define BPF_MAP_TYPE_ARRAY 2
 
 #define MAX_PREFIXES 16
+#define BIND_TRIES 4
+#define EINVAL 22
 
 typedef unsigned char __u8;
 typedef unsigned short __u16;
@@ -310,44 +312,62 @@ static __always_inline void v4mapped_words(__u32 dst[4], __be32 v4)
 static __always_inline int bind_v4(void *ctx)
 {
     struct sockaddr_in sa = {};
+    int i;
+    long rc;
 
-    if (pick_v4(&sa.sin_addr) < 0)
-        return allow_fallback();
-    freebind4(ctx);
     sa.sin_family = AF_INET;
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
+    for (i = 0; i < BIND_TRIES; i++) {
+        if (pick_v4(&sa.sin_addr) < 0)
+            return allow_fallback();
+        freebind4(ctx);
+        rc = bpf_bind(ctx, &sa, sizeof(sa));
+        if (!rc || rc == -EINVAL)
+            return 1;
+    }
+    return 0;
 }
 
 static __always_inline int bind_v6(void *ctx)
 {
     struct sockaddr_in6 sa = {};
+    int i;
+    long rc;
 
-    if (pick_v6(sa.sin6_addr) < 0)
-        return allow_fallback();
-    freebind6(ctx);
     sa.sin6_family = AF_INET6;
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
+    for (i = 0; i < BIND_TRIES; i++) {
+        if (pick_v6(sa.sin6_addr) < 0)
+            return allow_fallback();
+        freebind6(ctx);
+        rc = bpf_bind(ctx, &sa, sizeof(sa));
+        if (!rc || rc == -EINVAL)
+            return 1;
+    }
+    return 0;
 }
 
 static __always_inline int bind_v4mapped(void *ctx)
 {
     struct sockaddr_in6 sa = {};
     __be32 v4;
+    int i;
+    long rc;
 
-    if (pick_v4(&v4) < 0)
-        return 1;
-    freebind6(ctx);
     sa.sin6_family = AF_INET6;
     sa.sin6_addr[10] = 0xff;
     sa.sin6_addr[11] = 0xff;
-    sa.sin6_addr[12] = (__u8)v4;
-    sa.sin6_addr[13] = (__u8)(v4 >> 8);
-    sa.sin6_addr[14] = (__u8)(v4 >> 16);
-    sa.sin6_addr[15] = (__u8)(v4 >> 24);
-    bpf_bind(ctx, &sa, sizeof(sa));
-    return 1;
+    for (i = 0; i < BIND_TRIES; i++) {
+        if (pick_v4(&v4) < 0)
+            return allow_fallback();
+        sa.sin6_addr[12] = (__u8)v4;
+        sa.sin6_addr[13] = (__u8)(v4 >> 8);
+        sa.sin6_addr[14] = (__u8)(v4 >> 16);
+        sa.sin6_addr[15] = (__u8)(v4 >> 24);
+        freebind6(ctx);
+        rc = bpf_bind(ctx, &sa, sizeof(sa));
+        if (!rc || rc == -EINVAL)
+            return 1;
+    }
+    return 0;
 }
 
 SEC("cgroup/connect4")
@@ -376,7 +396,7 @@ int sendmsg4(struct bpf_sock_addr *ctx)
     if (skip4(ctx->user_ip4) || is_dns(ctx))
         return 1;
     if (pick_v4(&addr) < 0)
-        return 1;
+        return allow_fallback();
     freebind4(ctx);
     ctx->msg_src_ip4 = addr;
     return 1;
@@ -393,13 +413,13 @@ int sendmsg6(struct bpf_sock_addr *ctx)
         __be32 v4;
 
         if (pick_v4(&v4) < 0)
-            return 1;
+            return allow_fallback();
         freebind6(ctx);
         v4mapped_words(ctx->msg_src_ip6, v4);
         return 1;
     }
     if (pick_v6(addr) < 0)
-        return 1;
+        return allow_fallback();
     freebind6(ctx);
     store_v6(ctx->msg_src_ip6, addr);
     return 1;

@@ -1,4 +1,6 @@
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,17 +14,111 @@ const CGROUP_FS: &str = "/sys/fs/cgroup";
 const PREFIXES: &str = "egresso.prefixes";
 const HOST_FALLBACK: &str = "egresso.host-fallback";
 const LIST: &str = "/containers/json?filters=%7B%22label%22%3A%5B%22egresso.prefixes%22%5D%7D";
+const EVENTS: &str = "/events?filters=%7B%22type%22%3A%5B%22container%22%5D%2C%22event%22%3A%5B%22start%22%5D%2C%22label%22%3A%5B%22egresso.prefixes%22%5D%7D";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Container {
     pub name: String,
     pub cgroup: PathBuf,
+    pub cgroup_ino: u64,
     pub prefixes: Vec<IpNet>,
     pub host_fallback: bool,
 }
 
 pub fn available() -> bool {
     Path::new(DOCKER_SOCK).exists()
+}
+
+#[derive(Default)]
+pub struct EventWatch {
+    sock: Option<UnixStream>,
+}
+
+impl EventWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn wait(&mut self, quit_fd: i32, timeout: Duration) -> bool {
+        if self.sock.is_none() {
+            match open_events() {
+                Ok(s) => self.sock = Some(s),
+                Err(e) => eprintln!("docker events: {e}"),
+            }
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: quit_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: self.sock.as_ref().map(|s| s.as_raw_fd()).unwrap_or(-1),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let n = if self.sock.is_some() { 2 } else { 1 };
+        let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        loop {
+            let rc = unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, ms) };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                eprintln!("poll: {err}");
+                return false;
+            }
+            if rc == 0 {
+                return false;
+            }
+            if fds[0].revents != 0 {
+                return true;
+            }
+            self.drain();
+            return false;
+        }
+    }
+
+    fn drain(&mut self) {
+        let Some(sock) = &mut self.sock else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        loop {
+            match sock.read(&mut buf) {
+                Ok(0) => {
+                    self.sock = None;
+                    return;
+                }
+                Ok(_) => {}
+                Err(e)
+                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted =>
+                {
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("docker events: {e}");
+                    self.sock = None;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn open_events() -> Result<UnixStream, String> {
+    let mut stream = docker_connect(EVENTS)?;
+    let status = read_headers(&mut BufReader::new(&mut stream))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("docker events HTTP {status}"));
+    }
+    stream.set_read_timeout(None).ok();
+    stream
+        .set_nonblocking(true)
+        .map_err(|e| format!("docker events: {e}"))?;
+    Ok(stream)
 }
 
 pub fn containers() -> Result<Vec<Container>, String> {
@@ -60,8 +156,13 @@ impl Listed {
             Some(v) => parse_bool(v).map_err(|e| format!("{}: {HOST_FALLBACK}: {e}", self.name))?,
             None => false,
         };
+        let cgroup = cgroup(&self.name, &self.id)?;
+        let cgroup_ino = std::fs::metadata(&cgroup)
+            .map_err(|e| format!("{}: {e}", cgroup.display()))?
+            .ino();
         Ok(Container {
-            cgroup: cgroup(&self.name, &self.id)?,
+            cgroup,
+            cgroup_ino,
             name: self.name,
             prefixes,
             host_fallback,
@@ -167,13 +268,18 @@ fn is_root_cgroup(p: &Path) -> bool {
     p.as_os_str().to_string_lossy().trim_end_matches('/') == CGROUP_FS
 }
 
-fn docker_get(path: &str) -> Result<String, String> {
+fn docker_connect(path: &str) -> Result<UnixStream, String> {
     let mut stream =
         UnixStream::connect(DOCKER_SOCK).map_err(|e| format!("connect {DOCKER_SOCK}: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     write!(stream, "GET {path} HTTP/1.0\r\nHost: docker\r\n\r\n")
         .map_err(|e| format!("write docker.sock: {e}"))?;
+    Ok(stream)
+}
+
+fn docker_get(path: &str) -> Result<String, String> {
+    let mut stream = docker_connect(path)?;
     let (status, body) = read_http(&mut stream)?;
     if !(200..300).contains(&status) {
         return Err(format!("docker API HTTP {status}"));
@@ -260,8 +366,7 @@ fn encode_query(s: &str) -> String {
     out
 }
 
-fn read_http(stream: &mut UnixStream) -> Result<(u16, String), String> {
-    let mut r = BufReader::new(stream);
+fn read_headers(r: &mut impl BufRead) -> Result<u16, String> {
     let mut status_line = String::new();
     r.read_line(&mut status_line)
         .map_err(|e| format!("docker.sock: {e}"))?;
@@ -278,6 +383,12 @@ fn read_http(stream: &mut UnixStream) -> Result<(u16, String), String> {
             break;
         }
     }
+    Ok(status)
+}
+
+fn read_http(stream: &mut UnixStream) -> Result<(u16, String), String> {
+    let mut r = BufReader::new(stream);
+    let status = read_headers(&mut r)?;
     let mut body = Vec::new();
     r.take(8 * 1024 * 1024)
         .read_to_end(&mut body)
@@ -288,6 +399,7 @@ fn read_http(stream: &mut UnixStream) -> Result<(u16, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn parses_docker_inspect_json() {
@@ -341,5 +453,28 @@ mod tests {
     fn query_encodes_container_name() {
         assert_eq!(encode_query("searxng-1"), "searxng-1");
         assert_eq!(encode_query("a b"), "a%20b");
+    }
+
+    #[test]
+    fn reads_http_headers_then_body() {
+        let raw =
+            b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"start\"}\n";
+        let mut r = BufReader::new(&raw[..]);
+        assert_eq!(read_headers(&mut r).unwrap(), 200);
+        let mut rest = String::new();
+        r.read_to_string(&mut rest).unwrap();
+        assert!(rest.contains("start"));
+    }
+
+    #[test]
+    fn inode_changes_when_dir_recreated() {
+        let dir = std::env::temp_dir().join(format!("egresso-ino-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let a = std::fs::metadata(&dir).unwrap().ino();
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let b = std::fs::metadata(&dir).unwrap().ino();
+        let _ = std::fs::remove_dir(&dir);
+        assert_ne!(a, b);
     }
 }

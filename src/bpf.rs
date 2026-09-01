@@ -18,6 +18,7 @@ const FLAG_HOST_FALLBACK: u32 = 1;
 struct Instance {
     name: String,
     cgroup: PathBuf,
+    cgroup_ino: u64,
     prefixes: Vec<IpNet>,
     host_fallback: bool,
     _bpf: Ebpf,
@@ -27,6 +28,7 @@ struct Instance {
 impl Instance {
     fn same_as(&self, c: &Container) -> bool {
         self.cgroup == c.cgroup
+            && self.cgroup_ino == c.cgroup_ino
             && self.prefixes == c.prefixes
             && self.host_fallback == c.host_fallback
     }
@@ -95,6 +97,7 @@ fn attach_one(c: &Container) -> Result<Instance, String> {
     Ok(Instance {
         name: c.name.clone(),
         cgroup: c.cgroup.clone(),
+        cgroup_ino: c.cgroup_ino,
         prefixes: c.prefixes.clone(),
         host_fallback: c.host_fallback,
         _bpf: bpf,

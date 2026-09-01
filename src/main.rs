@@ -1,4 +1,6 @@
-use egresso::{containers, docker_available, Loader};
+use std::time::Duration;
+
+use egresso::{containers, docker_available, EventWatch, Loader};
 
 fn die(err: impl std::fmt::Display) -> ! {
     eprintln!("{err}");
@@ -12,7 +14,9 @@ fn main() {
     eprintln!("watching label egresso.prefixes");
 
     let mut loader = Loader::new();
-    let mut mask = block_quit_signals();
+    let mut events = EventWatch::new();
+    let mask = block_quit_signals();
+    let quit_fd = quit_signalfd(&mask);
     loop {
         match containers() {
             Ok(found) => {
@@ -26,7 +30,7 @@ fn main() {
             }
             Err(e) => eprintln!("{e}"),
         }
-        if wait_quit(&mut mask) {
+        if events.wait(quit_fd, Duration::from_secs(2)) {
             break;
         }
     }
@@ -43,10 +47,10 @@ fn block_quit_signals() -> libc::sigset_t {
     }
 }
 
-fn wait_quit(mask: &mut libc::sigset_t) -> bool {
-    let ts = libc::timespec {
-        tv_sec: 2,
-        tv_nsec: 0,
-    };
-    unsafe { libc::sigtimedwait(mask, std::ptr::null_mut(), &ts) > 0 }
+fn quit_signalfd(mask: &libc::sigset_t) -> i32 {
+    let fd = unsafe { libc::signalfd(-1, mask, libc::SFD_CLOEXEC) };
+    if fd < 0 {
+        die(format!("signalfd: {}", std::io::Error::last_os_error()));
+    }
+    fd
 }
