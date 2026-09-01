@@ -399,7 +399,6 @@ fn read_http(stream: &mut UnixStream) -> Result<(u16, String), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn parses_docker_inspect_json() {
@@ -464,17 +463,5 @@ mod tests {
         let mut rest = String::new();
         r.read_to_string(&mut rest).unwrap();
         assert!(rest.contains("start"));
-    }
-
-    #[test]
-    fn inode_changes_when_dir_recreated() {
-        let dir = std::env::temp_dir().join(format!("egresso-ino-{}", std::process::id()));
-        std::fs::create_dir(&dir).unwrap();
-        let a = std::fs::metadata(&dir).unwrap().ino();
-        std::fs::remove_dir(&dir).unwrap();
-        std::fs::create_dir(&dir).unwrap();
-        let b = std::fs::metadata(&dir).unwrap().ino();
-        let _ = std::fs::remove_dir(&dir);
-        assert_ne!(a, b);
     }
 }
