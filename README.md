@@ -1,8 +1,8 @@
 # egresso
 
-Rotates outbound IPv4 and IPv6 source addresses from a prefix pool, in the kernel. This is the successor to [http-proxy-ipv6-pool-docker](https://github.com/vojkovic/http-proxy-ipv6-pool-docker).
+Rotates outbound IPv4 and IPv6 source addresses from a prefix pool via BPF. Egresso hooks connect and sendmsg on the container's cgroup. Your application doesn't need any configuration.
 
-Egresso attaches a BPF program to a container's cgroup and binds a random address from that container's pool on the way out. The pool is the `egresso.prefixes` label.
+Successor to [http-proxy-ipv6-pool-docker](https://github.com/vojkovic/http-proxy-ipv6-pool-docker).
 
 ## Setup
 
